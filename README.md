@@ -2,25 +2,33 @@
 
 [中文](#中文) | [English](#english) | [HTML guide](./browser-use-plugin-tutorial.html)
 
+This repository documents a Windows workaround for enabling Codex Desktop's bundled `Browser Use` plugin when it is present locally but unavailable or broken in the plugin UI.
+
+All examples are sanitized. Replace placeholders such as `<Codex install directory>`, `<version>`, and `%USERPROFILE%` with values from your own machine.
+
 ## 中文
 
-这份教程说明如何在 Windows 上启用 Codex Desktop 自带但可能未正常安装的 `Browser Use` 插件。适用于以下情况：
+这份教程用于修复 Codex Desktop 更新后 `Browser Use` 消失、插件页能看到但安装失败、或 `codex debug prompt-input` 无法加载插件的问题。
 
-- Codex 插件页能看到 `Browser Use`，但点击安装失败。
-- 本地 Codex 安装目录中已经存在 `openai-bundled\plugins\browser-use`。
-- `codex debug prompt-input` 报告插件未安装或无法加载。
+推荐方案是把 `openai-bundled` marketplace 复制到 Codex 的 bundled marketplace 工作区，然后让 Codex 注册这个相对稳定的用户侧路径。这样 Codex 更新后，即使安装目录里的版本号变化，`Browser Use` 也不会因为 marketplace source 指向旧安装路径而失效。
 
-> 本教程不包含任何个人账号、token 或机器专属路径。请把示例中的 `<Codex安装目录>`、`<版本号>` 等占位符替换为你自己的实际值。
+### 适用场景
 
-### 1. 确认 browser-use 插件目录存在
+- Windows 上使用 Codex Desktop。
+- 本地 Codex 安装目录包含 `openai-bundled\plugins\browser-use`。
+- 更新 Codex 后 `Browser Use` 消失。
+- 插件页能看到 `Browser Use`，但点击安装失败。
+- 日志或调试输出显示 `plugin is not installed`。
 
-先确认本机 Codex Desktop 安装目录下有这个目录：
+### 1. 确认 browser-use 插件存在
+
+先确认当前 Codex Desktop 安装目录里有 bundled 插件：
 
 ```text
 <Codex安装目录>\app\resources\plugins\openai-bundled\plugins\browser-use
 ```
 
-PowerShell 检查：
+PowerShell:
 
 ```powershell
 $browserUsePath = "<Codex安装目录>\app\resources\plugins\openai-bundled\plugins\browser-use"
@@ -31,13 +39,13 @@ Test-Path $browserUsePath
 
 ### 2. 读取插件版本号
 
-插件缓存目录必须使用插件元数据里的版本号：
+读取插件 manifest：
 
 ```powershell
 Get-Content "$browserUsePath\.codex-plugin\plugin.json"
 ```
 
-找到类似内容：
+找到版本号，例如：
 
 ```json
 {
@@ -46,88 +54,113 @@ Get-Content "$browserUsePath\.codex-plugin\plugin.json"
 }
 ```
 
-如果你的版本不是 `0.1.0-alpha1`，后续命令里的 `$version` 请改成你自己的版本号。
+后续命令里的 `$version` 要使用这个 manifest 中的实际版本。
 
-### 3. 注册 openai-bundled marketplace
+### 3. 推荐：固定 openai-bundled marketplace 路径
 
-注册本地 bundled marketplace：
+不要长期注册带 Codex 版本号的安装目录，例如：
 
-```powershell
-$bundledMarketplace = "<Codex安装目录>\app\resources\plugins\openai-bundled"
-codex plugin marketplace add $bundledMarketplace
+```text
+<Codex安装目录>\app\resources\plugins\openai-bundled
 ```
 
-新版 Codex CLI 使用 `codex plugin marketplace add`。部分旧教程里的 `codex marketplace add` 可能已经不适用。
+Codex 更新后这个目录名通常会变化。这里选择复制到 Codex 用户目录下的 bundled marketplace 工作区：
 
-### 4. 开启 remote_control
+```text
+%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled
+```
 
-Browser Use 依赖远程控制能力：
+PowerShell:
+
+```powershell
+$src = "<Codex安装目录>\app\resources\plugins\openai-bundled"
+$dst = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
+
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+
+$srcRoot = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
+$dstRoot = (Resolve-Path -LiteralPath $dst).Path.TrimEnd('\')
+
+Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -Directory | ForEach-Object {
+  $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+  New-Item -ItemType Directory -Force -Path (Join-Path $dstRoot $rel) | Out-Null
+}
+
+Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
+  $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+  $target = Join-Path $dstRoot $rel
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+  [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($_.FullName))
+}
+```
+
+这里使用二进制读写复制，而不是普通 `Copy-Item -Recurse`，是为了避开 WindowsApps 等目录可能带来的特殊文件属性问题。
+
+### 4. 重新注册固定 marketplace
+
+如果之前已经注册过 `openai-bundled`，先移除旧注册：
+
+```powershell
+codex plugin marketplace remove openai-bundled
+```
+
+然后注册固定路径：
+
+```powershell
+codex plugin marketplace add "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
+```
+
+注册后，`%USERPROFILE%\.codex\config.toml` 中应类似：
+
+```toml
+[marketplaces.openai-bundled]
+source_type = "local"
+source = "\\?\<用户目录>\.codex\.tmp\bundled-marketplaces\openai-bundled"
+```
+
+重点是 source 不再指向带版本号的 Codex 安装目录。
+
+### 5. 启用 Browser Use 所需配置
+
+开启 `remote_control`：
 
 ```powershell
 codex features enable remote_control
 ```
 
-检查相关 feature：
-
-```powershell
-codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
-```
-
-理想情况下，这些项应该是 `true`：
-
-```text
-browser_use
-computer_use
-in_app_browser
-plugins
-remote_control
-```
-
-### 5. 在 config.toml 中启用插件
-
-打开 Codex 配置文件：
-
-```powershell
-notepad "$env:USERPROFILE\.codex\config.toml"
-```
-
-添加：
+确认 `config.toml` 里有：
 
 ```toml
 [plugins."browser-use@openai-bundled"]
 enabled = true
-```
-
-同时确认存在类似配置：
-
-```toml
-[marketplaces.openai-bundled]
-source_type = "local"
-source = "<你的 openai-bundled 路径>"
 
 [features]
 remote_control = true
 ```
 
-### 6. 如果插件页安装失败，手动补齐 cache
-
-正常插件缓存结构是：
-
-```text
-%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\<版本号>
-```
-
-例如：
-
-```text
-%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\0.1.0-alpha1
-```
-
-使用下面的 PowerShell 脚本复制插件文件：
+如果缺少插件配置，手动追加：
 
 ```powershell
-$src = "<Codex安装目录>\app\resources\plugins\openai-bundled\plugins\browser-use"
+Add-Content -LiteralPath "$env:USERPROFILE\.codex\config.toml" -Value @'
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
+'@
+```
+
+### 6. 如安装失败，补齐插件 cache
+
+正常 cache 结构是：
+
+```text
+%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\<version>
+```
+
+如果这个目录缺少 `.codex-plugin\plugin.json`，可以从固定 marketplace 复制：
+
+```powershell
 $version = "0.1.0-alpha1"
+$src = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\browser-use"
 $dst = "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser-use\$version"
 
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -148,55 +181,59 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
 }
 ```
 
-这里不使用普通的 `Copy-Item -Recurse`，是为了避开部分 Windows 安装目录上的特殊文件属性导致的复制失败。
+### 7. 验证
 
-### 7. 验证插件是否可加载
-
-检查关键文件：
+检查 feature：
 
 ```powershell
-Test-Path "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser-use\0.1.0-alpha1\.codex-plugin\plugin.json"
+codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
 ```
 
-返回 `True` 后，检查 Codex 是否能识别插件：
+检查 Codex 是否能加载插件：
 
 ```powershell
-codex debug prompt-input "test" | Select-String -Pattern "browser-use|Browser Use"
+codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use|Browser Use|failed to load plugin|plugin is not installed"
 ```
 
-如果输出中出现 `browser-use:browser` 或 `Browser Use`，说明插件已被加载。
+看到 `browser-use:browser` 或 `Browser Use`，并且没有 `failed to load plugin`，说明恢复成功。
 
-### 8. 重启 Codex Desktop
-
-彻底退出并重启 Codex Desktop。重启后，Browser Use 应该可以使用。
-
-如果插件页仍显示未安装，但 `codex debug prompt-input` 已经能看到 `Browser Use`，通常说明功能实际已经加载，不必重复点击安装。
+最后彻底重启 Codex Desktop。
 
 ### 中文 FAQ
 
+**为什么更新后会掉？**
+
+因为 Codex 更新后安装目录名会变化。如果 `config.toml` 里的 marketplace source 指向旧安装目录，Codex 就找不到 bundled marketplace。
+
+**为什么使用 `.codex\.tmp\bundled-marketplaces`？**
+
+它仍在用户目录下，不会带 Codex 安装包版本号；同时它更接近 Codex 自己维护 bundled marketplace 的位置，未来更新后更可能被新版内容刷新。
+
+**使用 `.tmp` 有什么风险？**
+
+`.tmp` 可能被 Codex 清理或重建。如果发生这种情况，重新复制 bundled marketplace 并执行 `codex plugin marketplace add` 即可恢复。
+
 **为什么版本号是 `0.1.0-alpha1`？**
 
-因为插件自己的 `.codex-plugin\plugin.json` 里写的就是这个版本。Codex 插件缓存目录按 `<marketplace>\<plugin>\<version>` 组织，所以目录名必须和插件元数据一致。
-
-**为什么 UI 能看到插件，但安装失败？**
-
-通常是 marketplace 注册成功了，但插件文件没有成功复制到 `%USERPROFILE%\.codex\plugins\cache`。手动补齐 cache 后即可解决。
+这是插件 manifest 中声明的版本。Codex cache 使用 `<marketplace>\<plugin>\<version>` 结构，所以目录名必须匹配 manifest。
 
 ## English
 
-This guide explains how to enable the bundled `Browser Use` plugin in Codex Desktop on Windows when the plugin is visible in the UI but installation fails.
+This guide fixes cases where Codex Desktop's bundled `Browser Use` plugin disappears after an update, appears in the plugin UI but fails to install, or cannot be loaded by `codex debug prompt-input`.
 
-It is useful when:
+The recommended fix is to mirror the `openai-bundled` marketplace into Codex's bundled marketplace workspace under the user profile and register that path. This avoids breakage when Codex updates and the versioned installation directory changes.
 
-- Codex shows `Browser Use` in the plugin UI, but installation fails.
-- Your local Codex installation already contains `openai-bundled\plugins\browser-use`.
-- `codex debug prompt-input` reports that the plugin is not installed or cannot be loaded.
+### When to use this
 
-> This guide intentionally uses placeholders. Replace `<Codex install directory>`, `<version>`, and similar values with paths from your own machine.
+- You use Codex Desktop on Windows.
+- Your local Codex installation contains `openai-bundled\plugins\browser-use`.
+- `Browser Use` disappeared after a Codex update.
+- The plugin UI shows `Browser Use`, but installation fails.
+- Debug logs mention `plugin is not installed`.
 
 ### 1. Confirm that browser-use exists
 
-Check that this directory exists under your Codex Desktop installation:
+Check that the bundled plugin exists:
 
 ```text
 <Codex install directory>\app\resources\plugins\openai-bundled\plugins\browser-use
@@ -213,13 +250,13 @@ Continue only if it returns `True`.
 
 ### 2. Read the plugin version
 
-The plugin cache directory must use the version from the plugin manifest:
+Read the plugin manifest:
 
 ```powershell
 Get-Content "$browserUsePath\.codex-plugin\plugin.json"
 ```
 
-Look for:
+Look for the version:
 
 ```json
 {
@@ -228,88 +265,113 @@ Look for:
 }
 ```
 
-If your version is different, use that value in later commands.
+Use the actual manifest version in later commands.
 
-### 3. Register the openai-bundled marketplace
+### 3. Recommended: pin openai-bundled to the bundled marketplace workspace
 
-Register the local bundled marketplace:
+Avoid permanently registering the versioned Codex install path:
 
-```powershell
-$bundledMarketplace = "<Codex install directory>\app\resources\plugins\openai-bundled"
-codex plugin marketplace add $bundledMarketplace
+```text
+<Codex install directory>\app\resources\plugins\openai-bundled
 ```
 
-Recent Codex CLI versions use `codex plugin marketplace add`. Older guides may mention `codex marketplace add`, which may no longer apply.
+That path changes after updates. Instead, mirror it here:
 
-### 4. Enable remote_control
+```text
+%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled
+```
 
-Browser Use depends on the remote-control feature:
+PowerShell:
+
+```powershell
+$src = "<Codex install directory>\app\resources\plugins\openai-bundled"
+$dst = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
+
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+
+$srcRoot = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
+$dstRoot = (Resolve-Path -LiteralPath $dst).Path.TrimEnd('\')
+
+Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -Directory | ForEach-Object {
+  $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+  New-Item -ItemType Directory -Force -Path (Join-Path $dstRoot $rel) | Out-Null
+}
+
+Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
+  $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+  $target = Join-Path $dstRoot $rel
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+  [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($_.FullName))
+}
+```
+
+The script copies file bytes directly instead of using plain `Copy-Item -Recurse`, which avoids special file-attribute issues in some Windows install directories.
+
+### 4. Re-register the stable marketplace
+
+If `openai-bundled` is already registered, remove the old source first:
+
+```powershell
+codex plugin marketplace remove openai-bundled
+```
+
+Then register the stable path:
+
+```powershell
+codex plugin marketplace add "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
+```
+
+After that, `%USERPROFILE%\.codex\config.toml` should contain something like:
+
+```toml
+[marketplaces.openai-bundled]
+source_type = "local"
+source = "\\?\<user directory>\.codex\.tmp\bundled-marketplaces\openai-bundled"
+```
+
+The important part is that source no longer points to the versioned Codex install directory.
+
+### 5. Enable Browser Use settings
+
+Enable `remote_control`:
 
 ```powershell
 codex features enable remote_control
 ```
 
-Check the relevant feature flags:
-
-```powershell
-codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
-```
-
-Ideally these should be `true`:
-
-```text
-browser_use
-computer_use
-in_app_browser
-plugins
-remote_control
-```
-
-### 5. Enable the plugin in config.toml
-
-Open the Codex config file:
-
-```powershell
-notepad "$env:USERPROFILE\.codex\config.toml"
-```
-
-Add:
+Confirm that `config.toml` contains:
 
 ```toml
 [plugins."browser-use@openai-bundled"]
 enabled = true
-```
-
-Also confirm that the config includes something like:
-
-```toml
-[marketplaces.openai-bundled]
-source_type = "local"
-source = "<your openai-bundled path>"
 
 [features]
 remote_control = true
 ```
 
-### 6. If installation fails in the UI, manually populate the cache
+If the plugin block is missing, append it:
 
-The expected plugin cache layout is:
+```powershell
+Add-Content -LiteralPath "$env:USERPROFILE\.codex\config.toml" -Value @'
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
+'@
+```
+
+### 6. If installation fails, populate the plugin cache
+
+The expected cache layout is:
 
 ```text
 %USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\<version>
 ```
 
-For example:
-
-```text
-%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\0.1.0-alpha1
-```
-
-Use this PowerShell script to copy the plugin files:
+If `.codex-plugin\plugin.json` is missing there, copy from the stable marketplace:
 
 ```powershell
-$src = "<Codex install directory>\app\resources\plugins\openai-bundled\plugins\browser-use"
 $version = "0.1.0-alpha1"
+$src = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\browser-use"
 $dst = "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser-use\$version"
 
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -330,39 +392,41 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
 }
 ```
 
-This avoids plain `Copy-Item -Recurse` because some Windows install directories can carry special file attributes that make a regular recursive copy fail.
+### 7. Verify
 
-### 7. Verify that Codex can load the plugin
-
-Check the manifest:
+Check feature flags:
 
 ```powershell
-Test-Path "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser-use\0.1.0-alpha1\.codex-plugin\plugin.json"
+codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
 ```
 
-Then check whether Codex can see the plugin:
+Check whether Codex can load the plugin:
 
 ```powershell
-codex debug prompt-input "test" | Select-String -Pattern "browser-use|Browser Use"
+codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use|Browser Use|failed to load plugin|plugin is not installed"
 ```
 
-If the output contains `browser-use:browser` or `Browser Use`, the plugin is loaded.
+If you see `browser-use:browser` or `Browser Use`, and no `failed to load plugin`, the plugin is loaded.
 
-### 8. Restart Codex Desktop
-
-Quit and restart Codex Desktop completely. Browser Use should now be available.
-
-If the plugin page still says it is not installed but `codex debug prompt-input` can see `Browser Use`, the plugin is usually already loaded and usable.
+Finally, fully restart Codex Desktop.
 
 ### English FAQ
 
+**Why does it break after updating Codex?**
+
+Codex updates can change the versioned installation directory. If `config.toml` points to the old marketplace source, Codex can no longer find the bundled marketplace.
+
+**Why use `.codex\.tmp\bundled-marketplaces`?**
+
+It is still under the user profile, so it avoids versioned install paths. It is also closer to Codex's own bundled marketplace workspace, so future Codex updates are more likely to refresh it with newer bundled content.
+
+**What is the risk of using `.tmp`?**
+
+`.tmp` may be cleaned or rebuilt by Codex. If that happens, copy the bundled marketplace again and rerun `codex plugin marketplace add`.
+
 **Why is the version `0.1.0-alpha1`?**
 
-Because that is the version declared in the plugin's `.codex-plugin\plugin.json`. Codex stores plugin cache entries as `<marketplace>\<plugin>\<version>`, so the directory name must match the manifest.
-
-**Why can the UI show the plugin while installation fails?**
-
-Usually the marketplace was registered successfully, but the plugin files were not copied into `%USERPROFILE%\.codex\plugins\cache`. Manually populating the cache fixes that state.
+That is the version declared by the plugin manifest. Codex stores cache entries as `<marketplace>\<plugin>\<version>`, so the cache directory must match the manifest.
 
 ## HTML version
 
