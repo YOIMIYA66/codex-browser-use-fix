@@ -171,6 +171,7 @@
         <ul>
           <li>Browser Use 更新后消失</li>
           <li>插件页可见但安装失败</li>
+          <li>Cache 被清理后快速恢复</li>
           <li>需要脱敏、可分享的修复教程</li>
         </ul>
       </aside>
@@ -181,6 +182,7 @@
     <nav aria-label="教程目录">
       <h2>目录</h2>
       <a href="#why">原因</a>
+      <a href="#quick-recovery">快速恢复</a>
       <a href="#check-plugin">1. 确认插件存在</a>
       <a href="#read-version">2. 读取版本号</a>
       <a href="#pin-marketplace">3. 固定 Marketplace</a>
@@ -202,6 +204,74 @@
           <p>Codex Desktop 更新后，安装目录中的版本号通常会变化。如果 <code>config.toml</code> 里的 <code>openai-bundled</code> marketplace 仍指向旧安装目录，Browser Use 就可能消失或加载失败。</p>
           <p>这里选择把 <code>openai-bundled</code> 复制到 Codex 用户目录下的 bundled marketplace 工作区，并注册这个路径。</p>
           <div class="note success">推荐路径：<code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled</code></div>
+          <p>如果固定 marketplace 还在，但 <code>codex debug prompt-input</code> 不再显示 <code>browser-use:browser</code>，通常是插件 cache 被清理，或 <code>config.toml</code> 丢失了 <code>browser-use@openai-bundled</code> / <code>remote_control</code> 配置。</p>
+        </div>
+      </section>
+
+      <section id="quick-recovery">
+        <div class="section-inner">
+          <div class="step-title">
+            <span class="step-number">0</span>
+            <h2>快速恢复</h2>
+          </div>
+          <p>如果 <code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\browser-use</code> 已存在，优先运行这个脚本。它会动态读取 manifest 版本、重建 cache，并补齐 Browser Use 必需启用项。</p>
+          <div class="code-block">
+            <div class="code-label"><span>PowerShell</span></div>
+            <pre><code>$ErrorActionPreference = "Stop"
+
+$marketplace = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
+$pluginSrc = Join-Path $marketplace "plugins\browser-use"
+$manifestPath = Join-Path $pluginSrc ".codex-plugin\plugin.json"
+$configPath = "$env:USERPROFILE\.codex\config.toml"
+
+if (!(Test-Path -LiteralPath $manifestPath)) {
+  throw "browser-use manifest not found: $manifestPath"
+}
+
+$version = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).version
+$cacheDst = "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser-use\$version"
+
+New-Item -ItemType Directory -Force -Path $cacheDst | Out-Null
+
+$srcRoot = (Resolve-Path -LiteralPath $pluginSrc).Path.TrimEnd('\')
+$dstRoot = (Resolve-Path -LiteralPath $cacheDst).Path.TrimEnd('\')
+
+Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -Directory | ForEach-Object {
+  $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+  New-Item -ItemType Directory -Force -Path (Join-Path $dstRoot $rel) | Out-Null
+}
+
+Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
+  $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+  $target = Join-Path $dstRoot $rel
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+  [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($_.FullName))
+}
+
+$config = Get-Content -LiteralPath $configPath -Raw
+
+if ($config -notmatch '(?m)^\[marketplaces\.openai-bundled\]') {
+  Add-Content -LiteralPath $configPath -Value @"
+
+[marketplaces.openai-bundled]
+source_type = "local"
+source = '\\?\$marketplace'
+"@
+}
+
+if ($config -notmatch '(?m)^\[plugins\."browser-use@openai-bundled"\]') {
+  Add-Content -LiteralPath $configPath -Value @'
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
+'@
+}
+
+codex features enable remote_control
+codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
+codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
+          </div>
+          <div class="note success">验证通过后重启 Codex Desktop。</div>
         </div>
       </section>
 
@@ -240,9 +310,10 @@ Test-Path $browserUsePath</code></pre>
             <div class="code-label"><span>plugin.json</span></div>
             <pre><code>{
   "name": "browser-use",
-  "version": "0.1.0-alpha1"
+  "version": "0.1.0-alpha2"
 }</code></pre>
           </div>
+          <p>后续命令里的 <code>$version</code> 要使用 manifest 中的实际值，不要硬编码教程里的示例版本。</p>
         </div>
       </section>
 
@@ -325,8 +396,8 @@ remote_control = true</code></pre>
           <p>如果 cache 目录缺少 manifest，从固定 marketplace 复制：</p>
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
-            <pre><code>$version = "0.1.0-alpha1"
-$src = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\browser-use"
+            <pre><code>$src = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\browser-use"
+$version = (Get-Content -LiteralPath "$src\.codex-plugin\plugin.json" -Raw | ConvertFrom-Json).version
 $dst = "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser-use\$version"
 
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -358,7 +429,7 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
             <pre><code>codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
-codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
+codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
           </div>
           <div class="note success">看到 <code>browser-use:browser</code> 或 <code>Browser Use</code>，且没有 <code>failed to load plugin</code>，说明已恢复。最后重启 Codex Desktop。</div>
         </div>
@@ -372,12 +443,13 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
           </div>
           <p>Codex updates can change the versioned installation directory. If <code>config.toml</code> points to the old bundled marketplace source, Browser Use may disappear or fail to load.</p>
           <p>Recommended fix: mirror <code>openai-bundled</code> into <code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled</code>, remove the old marketplace registration, then register that path.</p>
+          <p>If the marketplace mirror still exists but Browser Use disappears again, rebuild the plugin cache from the manifest version and confirm <code>remote_control</code> is enabled.</p>
           <div class="code-block">
             <div class="code-label"><span>Core commands</span></div>
             <pre><code>codex plugin marketplace remove openai-bundled
 codex plugin marketplace add "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
 codex features enable remote_control
-codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
+codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
           </div>
         </div>
       </section>
@@ -392,8 +464,8 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
           <p>它不包含 Codex 安装包版本号，并且更接近 Codex 自己维护 bundled marketplace 的位置，后续更新更可能刷新这里的内容。</p>
           <h3>.tmp 有什么风险？</h3>
           <p><code>.tmp</code> 可能被清理或重建。如果 Browser Use 再次消失，重新复制 bundled marketplace 并注册即可。</p>
-          <h3>Why is the version 0.1.0-alpha1?</h3>
-          <p>That value comes from the plugin manifest. Codex stores cache entries as <code>&lt;marketplace&gt;\&lt;plugin&gt;\&lt;version&gt;</code>.</p>
+          <h3>Why does the sample version change?</h3>
+          <p>The cache version must come from the plugin manifest. Codex stores cache entries as <code>&lt;marketplace&gt;\&lt;plugin&gt;\&lt;version&gt;</code>, so use the value from your local <code>plugin.json</code>.</p>
         </div>
       </section>
     </div>
