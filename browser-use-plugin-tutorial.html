@@ -190,6 +190,7 @@
       <a href="#enable">5. 启用配置</a>
       <a href="#cache">6. 修复 Cache</a>
       <a href="#verify">7. 验证</a>
+      <a href="#chrome">Chrome 修复</a>
       <a href="#english">English</a>
       <a href="#faq">FAQ</a>
     </nav>
@@ -432,6 +433,41 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
 codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
           </div>
           <div class="note success">看到 <code>browser-use:browser</code> 或 <code>Browser Use</code>，且没有 <code>failed to load plugin</code>，说明已恢复。最后重启 Codex Desktop。</div>
+        </div>
+      </section>
+
+      <section id="chrome">
+        <div class="section-inner">
+          <div class="step-title">
+            <span class="step-number">C</span>
+            <h2>Chrome 插件修复</h2>
+          </div>
+          <p>如果 <code>@chrome</code> 已启用但不可用，先确认用户侧 cache 是否还停留在旧版本。Codex 更新后，安装包里的 <code>chrome</code> 插件可能变成类似 <code>26.519.41501</code> 的版本，而 cache 仍是旧的 <code>0.1.7</code>。</p>
+          <div class="code-block">
+            <div class="code-label"><span>PowerShell</span></div>
+            <pre><code>$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+$chromePlugin = Join-Path $package.InstallLocation "app\resources\plugins\openai-bundled\plugins\chrome"
+Get-Content (Join-Path $chromePlugin ".codex-plugin\plugin.json") -Raw
+
+Get-Content "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest\.codex-plugin\plugin.json" -Raw</code></pre>
+          </div>
+          <p>如果版本不一致，把安装包里的 <code>plugins\chrome</code> 复制到下面两个 cache 位置：</p>
+          <div class="code-block">
+            <div class="code-label"><span>Paths</span></div>
+            <pre><code>%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\&lt;version&gt;
+%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\latest</code></pre>
+          </div>
+          <p>同时确认配置仍包含：</p>
+          <div class="code-block">
+            <div class="code-label"><span>config.toml</span></div>
+            <pre><code>[plugins."chrome@openai-bundled"]
+enabled = true
+
+[features]
+remote_control = true</code></pre>
+          </div>
+          <div class="note warning">不要用会整体重写 <code>config.toml</code> 的脚本处理包含中文路径的配置。编码不一致时，中文 project table 可能变成乱码并导致 TOML parse error。</div>
+          <p>如果插件 cache 已经是新版但仍无法启动，继续检查 <code>%LOCALAPPDATA%\OpenAI\Codex\bin\&lt;hash&gt;</code> 下的 helper binary，尤其是 <code>node_repl.exe</code>、<code>codex.exe</code>、<code>node.exe</code> 和 <code>rg.exe</code>。修复后完整重启 Codex Desktop，并新开线程测试 <code>@chrome</code>。</p>
         </div>
       </section>
 
