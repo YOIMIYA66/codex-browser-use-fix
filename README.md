@@ -2,13 +2,13 @@
 
 [中文](#中文) | [English](#english) | [HTML guide](./browser-use-plugin-tutorial.html)
 
-This repository documents a Windows workaround for enabling Codex Desktop's bundled `Browser Use` plugin when it is present locally but unavailable or broken in the plugin UI.
+This repository documents Windows workarounds for repairing Codex Desktop's bundled browser plugins when they are present locally but unavailable or broken in the plugin UI. It covers the in-app `Browser` plugin and the external `Chrome` plugin.
 
 All examples are sanitized. Replace placeholders such as `<Codex install directory>`, `<version>`, and `%USERPROFILE%` with values from your own machine.
 
 ## 中文
 
-这份教程用于修复 Codex Desktop 更新后 `Browser Use` 消失、插件页能看到但安装失败、或 `codex debug prompt-input` 无法加载插件的问题。
+这份教程用于修复 Codex Desktop 更新后 `Browser Use` / `Chrome` 消失、插件页能看到但安装失败、或 `codex debug prompt-input` 无法加载插件的问题。
 
 推荐方案是把 `openai-bundled` marketplace 复制到 Codex 的 bundled marketplace 工作区，然后让 Codex 注册这个相对稳定的用户侧路径。这样 Codex 更新后，即使安装目录里的版本号变化，`Browser Use` 也不会因为 marketplace source 指向旧安装路径而失效。
 
@@ -22,6 +22,8 @@ All examples are sanitized. Replace placeholders such as `<Codex install directo
 - 插件页能看到 `Browser Use`，但点击安装失败。
 - 日志或调试输出显示 `plugin is not installed`。
 - `codex debug prompt-input` 不再显示 `browser-use:browser`。
+- `codex debug prompt-input` 不再显示 `chrome:Chrome`。
+- `@chrome` 已在配置中启用，但运行时连不上 Chrome 或缺少 `node_repl` helper。
 
 ### 快速恢复：marketplace 还在但 Browser Use 又失效
 
@@ -108,6 +110,118 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
 ```
 
 恢复后重启 Codex Desktop。
+
+### 快速恢复：Chrome 插件 cache 过期
+
+Codex Desktop 更新后，安装包中的 `chrome` 插件版本可能从旧的 `0.1.7` 变成类似 `26.519.41501` 的版本。如果用户目录里的 marketplace 或 cache 仍是旧版本，`@chrome` 可能加载到过期插件代码。
+
+先查看当前安装包里的真实版本：
+
+```powershell
+$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+$chromePlugin = Join-Path $package.InstallLocation "app\resources\plugins\openai-bundled\plugins\chrome"
+Get-Content (Join-Path $chromePlugin ".codex-plugin\plugin.json") -Raw
+```
+
+再把最新版 `chrome` 插件同步到用户侧 marketplace 和 plugin cache。这个脚本只复制 `chrome` 插件目录，不重写整个 `config.toml`：
+
+```powershell
+$ErrorActionPreference = "Stop"
+
+$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+$pluginSrc = Join-Path $package.InstallLocation "app\resources\plugins\openai-bundled\plugins\chrome"
+$marketplacePlugin = "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\chrome"
+$manifestPath = Join-Path $pluginSrc ".codex-plugin\plugin.json"
+$version = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).version
+
+function Copy-TreeByStream {
+  param(
+    [Parameter(Mandatory = $true)][string]$Source,
+    [Parameter(Mandatory = $true)][string]$Destination
+  )
+
+  if (Test-Path -LiteralPath $Destination) {
+    Remove-Item -LiteralPath $Destination -Recurse -Force
+  }
+
+  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+  $srcRoot = (Resolve-Path -LiteralPath $Source).Path.TrimEnd('\')
+  $dstRoot = (Resolve-Path -LiteralPath $Destination).Path.TrimEnd('\')
+
+  Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -Directory | ForEach-Object {
+    $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+    New-Item -ItemType Directory -Force -Path (Join-Path $dstRoot $rel) | Out-Null
+  }
+
+  Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
+    $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+    $target = Join-Path $dstRoot $rel
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+    [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($_.FullName))
+  }
+}
+
+Copy-TreeByStream -Source $pluginSrc -Destination $marketplacePlugin
+Copy-TreeByStream -Source $pluginSrc -Destination "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\$version"
+Copy-TreeByStream -Source $pluginSrc -Destination "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest"
+
+codex features enable remote_control
+codex features list | Select-String -Pattern "remote_control|plugins|browser_use|in_app_browser|computer_use"
+```
+
+确认 `config.toml` 里保留这些配置：
+
+```toml
+[marketplaces.openai-bundled]
+source_type = "local"
+source = "\\?\<用户目录>\.codex\.tmp\bundled-marketplaces\openai-bundled"
+
+[plugins."chrome@openai-bundled"]
+enabled = true
+
+[features]
+remote_control = true
+```
+
+不要用会整体 `Set-Content` 重写 `config.toml` 的脚本处理包含中文路径的配置。PowerShell 编码不一致时，`[projects.'d:\中文路径']` 这类表头可能被写成乱码，导致 Codex 报 TOML parse error。修改配置前至少先备份，并在修改后验证：
+
+```powershell
+Copy-Item "$env:USERPROFILE\.codex\config.toml" "$env:USERPROFILE\.codex\config.toml.bak-before-browser-plugin-repair" -Force
+
+@'
+import pathlib, tomllib
+p = pathlib.Path.home() / ".codex" / "config.toml"
+tomllib.loads(p.read_text(encoding="utf-8-sig"))
+print("config toml ok")
+'@ | python -
+```
+
+### 高级恢复：Chrome helper binary 过期
+
+如果 `chrome` 插件版本已经更新，但 `@chrome` 仍无法启动，继续检查 helper binary。Codex 会把 `node.exe`、`node_repl.exe`、`rg.exe`、`codex.exe` 等 helper 放到 `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>`。Codex 更新后，hash 目录可能变化，旧 helper 会失效。
+
+先做 dry-run 检查。下面路径来自本仓库外的本地修复 skill；如果你没有这个 skill，可以按同样原则检查目标 hash 目录是否缺失：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\fix-skill\scripts\repair-codex-windows-browser-use.ps1" -DryRun
+```
+
+如果输出里出现 `would-copy`，说明需要修复：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\fix-skill\scripts\repair-codex-windows-browser-use.ps1"
+```
+
+修复后再次 dry-run，应看到所有文件都是 `skipped` 且 `sameHash = true`。一次成功修复通常会验证：
+
+```text
+node.exe      v24.x
+codex.exe     codex-cli <current version>
+node_repl.exe Run the node_repl MCP stdio server.
+rg.exe        ripgrep <current version>
+```
+
+最后完整退出并重启 Codex Desktop，再新开线程测试 `@chrome`。当前线程的工具列表通常不会在运行中完整刷新。
 
 ### 1. 确认 browser-use 插件存在
 
@@ -308,7 +422,7 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
 
 ## English
 
-This guide fixes cases where Codex Desktop's bundled `Browser Use` plugin disappears after an update, appears in the plugin UI but fails to install, or cannot be loaded by `codex debug prompt-input`.
+This guide fixes cases where Codex Desktop's bundled `Browser` or `Chrome` plugin disappears after an update, appears in the plugin UI but fails to install, or cannot be loaded by `codex debug prompt-input`.
 
 The recommended fix is to mirror the `openai-bundled` marketplace into Codex's bundled marketplace workspace under the user profile and register that path. This avoids breakage when Codex updates and the versioned installation directory changes.
 
@@ -322,6 +436,8 @@ If the mirrored marketplace still exists but Browser Use breaks again, check the
 - The plugin UI shows `Browser Use`, but installation fails.
 - Debug logs mention `plugin is not installed`.
 - `codex debug prompt-input` no longer lists `browser-use:browser`.
+- `codex debug prompt-input` no longer lists `chrome:Chrome`.
+- `@chrome` is enabled in config but cannot connect or cannot start its `node_repl` helper.
 
 ### Quick recovery: marketplace exists but Browser Use broke again
 
@@ -337,6 +453,69 @@ rebuild the cache and config using the same recovery script from the Chinese sec
 - copy `plugins\browser-use` into `%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\<version>`
 - keep `[plugins."browser-use@openai-bundled"] enabled = true`
 - keep `[features] remote_control = true`
+
+### Quick recovery: stale Chrome plugin cache
+
+After a Codex Desktop update, the bundled `chrome` plugin version can change from an older value such as `0.1.7` to a package-derived version such as `26.519.41501`. If the user-side marketplace or plugin cache still contains the older version, `@chrome` can load stale plugin code.
+
+Check the installed package version:
+
+```powershell
+$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+$chromePlugin = Join-Path $package.InstallLocation "app\resources\plugins\openai-bundled\plugins\chrome"
+Get-Content (Join-Path $chromePlugin ".codex-plugin\plugin.json") -Raw
+```
+
+Then copy that plugin into both the bundled marketplace mirror and the `chrome` plugin cache. Prefer a script that copies only the plugin tree and does not rewrite the whole `config.toml`; rewriting the full file with the wrong PowerShell encoding can corrupt project table names that contain non-ASCII paths.
+
+The expected cache paths are:
+
+```text
+%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\<version>
+%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\latest
+```
+
+Keep this configuration:
+
+```toml
+[plugins."chrome@openai-bundled"]
+enabled = true
+
+[features]
+remote_control = true
+```
+
+After editing config, verify it still parses:
+
+```powershell
+@'
+import pathlib, tomllib
+p = pathlib.Path.home() / ".codex" / "config.toml"
+tomllib.loads(p.read_text(encoding="utf-8-sig"))
+print("config toml ok")
+'@ | python -
+```
+
+### Advanced recovery: stale Chrome helper binaries
+
+If the `chrome` plugin is current but `@chrome` still cannot start, inspect helper binaries under:
+
+```text
+%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>
+```
+
+Codex updates can change the hash directories for `codex.exe`, `node_repl.exe`, `node.exe`, and `rg.exe`. A dry run from a helper repair script should show whether files would be copied. If it reports `would-copy`, repair the helpers and rerun dry-run until every file is `skipped` with `sameHash = true`.
+
+The successful validation normally includes:
+
+```text
+node.exe      v24.x
+codex.exe     codex-cli <current version>
+node_repl.exe Run the node_repl MCP stdio server.
+rg.exe        ripgrep <current version>
+```
+
+Fully quit and restart Codex Desktop after repairing `@chrome`; the current thread usually will not reload the tool list in place.
 
 ### 1. Confirm that browser-use exists
 
