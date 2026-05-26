@@ -442,19 +442,24 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
             <span class="step-number">C</span>
             <h2>Chrome 插件修复</h2>
           </div>
-          <p>如果 <code>@chrome</code> 已启用但不可用，先确认用户侧 cache 是否还停留在旧版本。Codex 更新后，安装包里的 <code>chrome</code> 插件可能变成类似 <code>26.519.41501</code> 的版本，而 cache 仍是旧的 <code>0.1.7</code>。</p>
+          <p>如果 <code>@browser</code> 或 <code>@chrome</code> 已启用但不可用，先确认用户侧 cache 是否还停留在旧版本。Codex 更新后，安装包里的 <code>browser</code> / <code>chrome</code> 插件可能变成类似 <code>26.519.41501</code> 的版本，而 cache 仍是旧版本或缺少 <code>latest</code>。</p>
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
             <pre><code>$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+$browserPlugin = Join-Path $package.InstallLocation "app\resources\plugins\openai-bundled\plugins\browser"
 $chromePlugin = Join-Path $package.InstallLocation "app\resources\plugins\openai-bundled\plugins\chrome"
+Get-Content (Join-Path $browserPlugin ".codex-plugin\plugin.json") -Raw
 Get-Content (Join-Path $chromePlugin ".codex-plugin\plugin.json") -Raw
 
+Get-Content "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\browser\latest\.codex-plugin\plugin.json" -Raw
 Get-Content "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest\.codex-plugin\plugin.json" -Raw</code></pre>
           </div>
-          <p>如果版本不一致，把安装包里的 <code>plugins\chrome</code> 复制到下面两个 cache 位置：</p>
+          <p>如果版本不一致，把安装包里的 <code>plugins\browser</code> 和 <code>plugins\chrome</code> 复制到对应 cache 位置。Chrome 正在运行时，<code>extension-host.exe</code> 可能被锁住；不要先删除整个 <code>chrome\latest</code>，使用哈希感知的覆盖同步，只复制缺失或哈希不同的文件。</p>
           <div class="code-block">
             <div class="code-label"><span>Paths</span></div>
-            <pre><code>%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\&lt;version&gt;
+            <pre><code>%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser\&lt;version&gt;
+%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser\latest
+%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\&lt;version&gt;
 %USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\latest</code></pre>
           </div>
           <p>同时确认配置仍包含：</p>
@@ -463,11 +468,21 @@ Get-Content "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest\
             <pre><code>[plugins."chrome@openai-bundled"]
 enabled = true
 
+[plugins."browser@openai-bundled"]
+enabled = true
+
 [features]
 remote_control = true</code></pre>
           </div>
           <div class="note warning">不要用会整体重写 <code>config.toml</code> 的脚本处理包含中文路径的配置。编码不一致时，中文 project table 可能变成乱码并导致 TOML parse error。</div>
-          <p>如果插件 cache 已经是新版但仍无法启动，继续检查 <code>%LOCALAPPDATA%\OpenAI\Codex\bin\&lt;hash&gt;</code> 下的 helper binary，尤其是 <code>node_repl.exe</code>、<code>codex.exe</code>、<code>node.exe</code> 和 <code>rg.exe</code>。修复后完整重启 Codex Desktop，并新开线程测试 <code>@chrome</code>。</p>
+          <p>如果插件 cache 已经是新版但仍无法启动，继续检查 <code>%LOCALAPPDATA%\OpenAI\Codex\bin\&lt;hash&gt;</code> 下的 helper binary，尤其是 <code>node_repl.exe</code>、<code>codex.exe</code>、<code>node.exe</code> 和 <code>rg.exe</code>。修复后完整重启 Codex Desktop，并新开线程测试 <code>@browser</code> / <code>@chrome</code>。</p>
+          <p><code>@chrome</code> 还需要 Chrome 使用装有 Codex 扩展的正确 profile。profile 名包含空格时要这样启动：</p>
+          <div class="code-block">
+            <div class="code-label"><span>PowerShell</span></div>
+            <pre><code>Start-Process -FilePath "C:\Program Files\Google\Chrome\Application\chrome.exe" -ArgumentList '--profile-directory="Profile 1" --new-window about:blank'</code></pre>
+          </div>
+          <div class="note warning">不要写成 <code>--profile-directory=Profile 1</code>。未加引号时 Chrome 可能进入错误 profile，扩展 backend 不会出现在 <code>agent.browsers.list()</code> 里。</div>
+          <div class="note success">最终验证应看到 <code>browser:browser</code> 和 <code>chrome:Chrome</code> 都指向 <code>plugins\cache\openai-bundled\...\latest</code>，并且 Browser 与 Chrome 扩展通道都能打开 <code>https://example.com/</code>，标题为 <code>Example Domain</code>。</div>
         </div>
       </section>
 
