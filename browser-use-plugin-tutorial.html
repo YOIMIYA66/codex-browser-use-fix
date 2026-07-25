@@ -164,7 +164,7 @@
     <div class="hero">
       <div>
         <h1>Codex Browser Use Fix</h1>
-        <p>Windows guide for keeping Codex Desktop's bundled Browser Use plugin available after updates by pinning openai-bundled to Codex's bundled marketplace workspace.</p>
+        <p>Windows guide for diagnosing and recovering Codex Desktop Browser and Chrome plugins while keeping Desktop's native AppX marketplace lifecycle intact.</p>
       </div>
       <aside class="summary" aria-label="适用范围">
         <strong>适用范围 / When to use</strong>
@@ -182,10 +182,11 @@
     <nav aria-label="教程目录">
       <h2>目录</h2>
       <a href="#why">原因</a>
-      <a href="#quick-recovery">快速恢复</a>
+      <a href="#native-sync">原生同步</a>
+      <a href="#quick-recovery">旧版恢复</a>
       <a href="#check-plugin">1. 确认插件存在</a>
       <a href="#read-version">2. 读取版本号</a>
-      <a href="#pin-marketplace">3. 固定 Marketplace</a>
+      <a href="#pin-marketplace">3. 兼容 Marketplace</a>
       <a href="#register">4. 重新注册</a>
       <a href="#enable">5. 启用配置</a>
       <a href="#cache">6. 修复 Cache</a>
@@ -202,19 +203,42 @@
             <span class="step-number">!</span>
             <h2>为什么更新后会掉</h2>
           </div>
-          <p>Codex Desktop 更新后，安装目录中的版本号通常会变化。如果 <code>config.toml</code> 里的 <code>openai-bundled</code> marketplace 仍指向旧安装目录，Browser Use 就可能消失或加载失败。</p>
-          <p>这里选择把 <code>openai-bundled</code> 复制到 Codex 用户目录下的 bundled marketplace 工作区，并注册这个路径。</p>
-          <div class="note success">推荐路径：<code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled</code></div>
-          <p>如果固定 marketplace 还在，但 <code>codex debug prompt-input</code> 不再显示 <code>browser-use:browser</code>，通常是插件 cache 被清理，或 <code>config.toml</code> 丢失了 <code>browser-use@openai-bundled</code> / <code>remote_control</code> 配置。</p>
+          <p>Codex Desktop 更新后，AppX 包、bundled 插件和 runtime marketplace 分别有自己的版本。如果 <code>config.toml</code> 仍指向旧安装目录或手工快照，Browser、Chrome 或 Computer Use 就可能加载失败。</p>
+          <p>当前 Desktop 会把 AppX 内的 marketplace 同步到用户目录并自动注册，不需要固定到单一目录名。</p>
+          <div class="note success">健康路径形态：<code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled-appx-&lt;desktop-version&gt;</code></div>
+          <p>插件 manifest 版本应与当前 AppX 中同名插件一致；插件版本不要求等于 Desktop 版本。</p>
+        </div>
+      </section>
+
+      <section id="native-sync">
+        <div class="section-inner">
+          <div class="step-title">
+            <span class="step-number">0</span>
+            <h2>先让 Desktop 原生同步</h2>
+          </div>
+          <p>完整退出并重新启动 Codex Desktop，让它生成当前 AppX 专用 runtime marketplace。然后执行：</p>
+          <div class="code-block">
+            <div class="code-label"><span>PowerShell</span></div>
+            <pre><code>codex plugin marketplace list
+codex plugin list
+powershell -ExecutionPolicy Bypass -File .\scripts\check-codex-browser-health.ps1</code></pre>
+          </div>
+          <p>如果 <code>openai-bundled</code> 仍指向旧快照，先备份 <code>config.toml</code>，移除旧注册，再完整重启 Desktop：</p>
+          <div class="code-block">
+            <div class="code-label"><span>PowerShell</span></div>
+            <pre><code>codex plugin marketplace remove openai-bundled</code></pre>
+          </div>
+          <div class="note warning">当前 CLI 已移除 <code>remote_control</code>。不要在新配置中添加 <code>remote_control = true</code>。</div>
         </div>
       </section>
 
       <section id="quick-recovery">
         <div class="section-inner">
           <div class="step-title">
-            <span class="step-number">0</span>
-            <h2>快速恢复</h2>
+            <span class="step-number">L</span>
+            <h2>旧版 Browser Use 恢复</h2>
           </div>
+          <div class="note warning">仅当安装包仍提供 <code>browser-use</code>，并且 <code>codex features list</code> 仍列出 <code>remote_control</code> 时使用本节。</div>
           <p>如果 <code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\browser-use</code> 已存在，优先运行这个脚本。它会动态读取 manifest 版本、重建 cache，并补齐 Browser Use 必需启用项。</p>
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
@@ -268,8 +292,11 @@ enabled = true
 '@
 }
 
-codex features enable remote_control
-codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
+$features = codex features list
+if ($features | Select-String -Pattern "^remote_control\s") {
+  codex features enable remote_control
+}
+$features | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
 codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
           </div>
           <div class="note success">验证通过后重启 Codex Desktop。</div>
@@ -322,9 +349,9 @@ Test-Path $browserUsePath</code></pre>
         <div class="section-inner">
           <div class="step-title">
             <span class="step-number">3</span>
-            <h2>复制到 bundled marketplace 工作区</h2>
+          <h2>兼容恢复：复制 Marketplace</h2>
           </div>
-          <p>不要长期注册带版本号的 Codex 安装目录。把 bundled marketplace 镜像到用户目录：</p>
+          <p>仅当 Desktop 多次完整重启后仍无法生成 AppX 专用 runtime 时，才把 bundled marketplace 镜像到无版本用户目录：</p>
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
             <pre><code>$src = "&lt;Codex安装目录&gt;\app\resources\plugins\openai-bundled"
@@ -347,7 +374,7 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
   [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($_.FullName))
 }</code></pre>
           </div>
-          <div class="note warning"><code>.tmp</code> 可能被 Codex 清理或重建。如果发生这种情况，重新复制并注册即可。</div>
+          <div class="note warning"><code>.tmp</code> 被 Codex 清理或重建属于正常生命周期。始终先让 Desktop 原生同步，手工复制只作最后恢复。</div>
         </div>
       </section>
 
@@ -355,14 +382,14 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
         <div class="section-inner">
           <div class="step-title">
             <span class="step-number">4</span>
-            <h2>重新注册固定 Marketplace</h2>
+            <h2>兼容恢复：重新注册 Marketplace</h2>
           </div>
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
             <pre><code>codex plugin marketplace remove openai-bundled
 codex plugin marketplace add "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"</code></pre>
           </div>
-          <p>配置文件中应指向用户目录镜像，而不是带版本号的安装目录。</p>
+          <p>此用户目录镜像只用于旧版兼容。新版 Desktop 自动改回 <code>openai-bundled-appx-*</code> 是正常行为。</p>
         </div>
       </section>
 
@@ -370,8 +397,9 @@ codex plugin marketplace add "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\
         <div class="section-inner">
           <div class="step-title">
             <span class="step-number">5</span>
-            <h2>启用 Browser Use 配置</h2>
+            <h2>旧版兼容：启用 Browser Use 配置</h2>
           </div>
+          <div class="note warning">仅当 <code>codex features list</code> 仍列出 <code>remote_control</code> 时执行。</div>
           <div class="code-block">
             <div class="code-label"><span>PowerShell</span></div>
             <pre><code>codex features enable remote_control</code></pre>
@@ -462,17 +490,14 @@ Get-Content "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest\
 %USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\&lt;version&gt;
 %USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome\latest</code></pre>
           </div>
-          <p>同时确认配置仍包含：</p>
+          <p>同时确认当前插件启用配置仍包含：</p>
           <div class="code-block">
             <div class="code-label"><span>config.toml</span></div>
             <pre><code>[plugins."chrome@openai-bundled"]
 enabled = true
 
 [plugins."browser@openai-bundled"]
-enabled = true
-
-[features]
-remote_control = true</code></pre>
+enabled = true</code></pre>
           </div>
           <div class="note warning">不要用会整体重写 <code>config.toml</code> 的脚本处理包含中文路径的配置。编码不一致时，中文 project table 可能变成乱码并导致 TOML parse error。</div>
           <p>如果插件 cache 已经是新版但仍无法启动，继续检查 <code>%LOCALAPPDATA%\OpenAI\Codex\bin\&lt;hash&gt;</code> 下的 helper binary，尤其是 <code>node_repl.exe</code>、<code>codex.exe</code>、<code>node.exe</code> 和 <code>rg.exe</code>。修复后完整重启 Codex Desktop，并新开线程测试 <code>@browser</code> / <code>@chrome</code>。</p>
@@ -492,15 +517,14 @@ remote_control = true</code></pre>
             <span class="step-number">EN</span>
             <h2>English Summary</h2>
           </div>
-          <p>Codex updates can change the versioned installation directory. If <code>config.toml</code> points to the old bundled marketplace source, Browser Use may disappear or fail to load.</p>
-          <p>Recommended fix: mirror <code>openai-bundled</code> into <code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled</code>, remove the old marketplace registration, then register that path.</p>
-          <p>If the marketplace mirror still exists but Browser Use disappears again, rebuild the plugin cache from the manifest version and confirm <code>remote_control</code> is enabled.</p>
+          <p>Current Codex Desktop builds should own the bundled marketplace lifecycle. A healthy source is the AppX-specific runtime under <code>%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled-appx-&lt;desktop-version&gt;</code>.</p>
+          <p>Fully restart Desktop first, then compare the package and runtime plugin manifests. Use the non-versioned mirror and direct cache copying only as compatibility or last-resort recovery.</p>
+          <p><code>remote_control</code> has been removed from the current CLI and must not be added to new configurations.</p>
           <div class="code-block">
             <div class="code-label"><span>Core commands</span></div>
-            <pre><code>codex plugin marketplace remove openai-bundled
-codex plugin marketplace add "$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled"
-codex features enable remote_control
-codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"</code></pre>
+            <pre><code>codex plugin marketplace list
+codex plugin list
+powershell -ExecutionPolicy Bypass -File .\scripts\check-codex-browser-health.ps1</code></pre>
           </div>
         </div>
       </section>
@@ -512,9 +536,9 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
             <h2>FAQ</h2>
           </div>
           <h3>为什么使用 .codex\.tmp？</h3>
-          <p>它不包含 Codex 安装包版本号，并且更接近 Codex 自己维护 bundled marketplace 的位置，后续更新更可能刷新这里的内容。</p>
+          <p>这是 Desktop 物化 runtime marketplace 的工作区。新版通常使用带 AppX 版本的 <code>openai-bundled-appx-*</code> 目录，应以当前注册结果为准。</p>
           <h3>.tmp 有什么风险？</h3>
-          <p><code>.tmp</code> 可能被清理或重建。如果 Browser Use 再次消失，重新复制 bundled marketplace 并注册即可。</p>
+          <p><code>.tmp</code> 可能被清理或重建，这是正常生命周期。先完整重启 Desktop 让它自动恢复；只有原生同步持续失败时才手工复制和注册。</p>
           <h3>Why does the sample version change?</h3>
           <p>The cache version must come from the plugin manifest. Codex stores cache entries as <code>&lt;marketplace&gt;\&lt;plugin&gt;\&lt;version&gt;</code>, so use the value from your local <code>plugin.json</code>.</p>
         </div>
