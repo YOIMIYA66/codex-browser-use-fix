@@ -89,19 +89,21 @@ Current Desktop code reconciles `latest` to the manifest version. A missing `lat
 
 ### 3. Check the current AppX runtime materialization
 
-Run the recovery script in dry-run mode:
+Preview the recovery with PowerShell's standard `-WhatIf` mode:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\repair-codex-chrome-runtime.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\scripts\repair-codex-chrome-runtime.ps1 -WhatIf
 ```
+
+`-WhatIf` performs discovery and validation only. It does not create the parent directory, staging directory, or target directory, and it does not run the recovered executables.
 
 Results:
 
 - `healthy`: the exact current hash directory exists and validates.
-- `would-create`: the current AppX runtime is present in WindowsApps but its validated user-side copy is missing.
+- `What if: ...`: the current AppX runtime is present in WindowsApps but its validated user-side copy is missing.
 - an exception: a required AppX file is missing or an existing target failed validation.
 
-The script reproduces Desktop's bundle-hash algorithm. It hashes these Codex files in order:
+For the Desktop runtime schema validated during this incident, the script hashes these Codex files in order:
 
 ```text
 codex.exe
@@ -110,7 +112,7 @@ codex-windows-sandbox-setup.exe
 codex-command-runner.exe
 ```
 
-It separately hashes these CUA runtime files:
+It separately hashes the CUA manifest and the two executable paths declared by that manifest. For the validated build, those inputs are:
 
 ```text
 manifest.json
@@ -133,9 +135,9 @@ The script:
 1. selects the newest installed `OpenAI.Codex` AppX package;
 2. computes the exact 16-character runtime hashes expected by Desktop;
 3. copies through staging with `robocopy /A-:E` so WindowsApps encryption does not propagate;
-4. validates required SHA256 values, recursive file count, and encryption attributes;
+4. validates every recursive file by relative path and SHA256, then checks encryption attributes;
 5. atomically renames staging into the expected hash directories;
-6. smoke-tests `codex.exe`, `node.exe`, and `node_repl.exe`.
+6. smoke-tests `codex.exe`, `node.exe`, and `node_repl.exe`, failing recovery if any process returns a nonzero exit code.
 
 It refuses to overwrite an existing invalid hash directory. Inspect or back up that directory before taking any destructive action.
 
@@ -157,9 +159,11 @@ Re-run `check-native-host-manifest.js --json`. Success means exit code `0` and `
 - Do not assume a newer global npm CLI repairs Desktop's embedded runtime.
 - Do not delete all old hash directories until the current runtime is validated and Desktop has restarted successfully.
 
-## Why the repair is update-safe
+## Compatibility boundary
 
-No version or hash is hard-coded in the script. Every run derives its source from the newest installed AppX and calculates the target hashes from that package's own files. After a future Desktop update, dry-run will report the new expected directories without treating old hashes as current.
+No output directory hash is hard-coded: every run derives its source from the newest installed AppX and calculates target hashes from that package's files. The CUA executable paths come from the AppX runtime manifest.
+
+The Codex hash input set is the schema confirmed for Desktop `26.721.4979.0`; it is not a guarantee for every future Desktop build. A missing required file or an incompatible CUA manifest fails closed. After a Desktop update, run `-WhatIf` first and confirm that the documented hash inputs still match the new bundle before performing recovery.
 
 The repair remains a fallback. A healthy Desktop should materialize these runtimes itself.
 

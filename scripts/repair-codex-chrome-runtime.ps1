@@ -1,10 +1,12 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-  [switch]$DryRun,
   [string]$CodexDataRoot = (Join-Path $env:LOCALAPPDATA "OpenAI\Codex")
 )
 
 $ErrorActionPreference = "Stop"
+$isWhatIf = [bool]$WhatIfPreference
+# Keep WhatIf from suppressing read-only work inside AppX and hashing cmdlets.
+$WhatIfPreference = $false
 
 function Get-DesktopBundleHash {
   param(
@@ -40,7 +42,7 @@ function Test-BundleTarget {
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Target,
     [Parameter(Mandatory = $true)][string[]]$RequiredFiles,
-    [switch]$CompareFileCount
+    [switch]$CompareAllFiles
   )
 
   if (!(Test-Path -LiteralPath $Target -PathType Container)) {
@@ -50,20 +52,33 @@ function Test-BundleTarget {
   foreach ($relativePath in $RequiredFiles) {
     $sourceFile = Join-Path $Source $relativePath
     $targetFile = Join-Path $Target $relativePath
-    if (!(Test-Path -LiteralPath $targetFile -PathType Leaf)) {
-      return $false
-    }
-    if ((Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash -ne
-        (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256).Hash) {
+    if (!(Test-Path -LiteralPath $sourceFile -PathType Leaf) -or
+        !(Test-Path -LiteralPath $targetFile -PathType Leaf)) {
       return $false
     }
   }
 
-  if ($CompareFileCount) {
-    $sourceCount = @(Get-ChildItem -LiteralPath $Source -Recurse -File -Force).Count
-    $targetCount = @(Get-ChildItem -LiteralPath $Target -Recurse -File -Force).Count
-    if ($sourceCount -ne $targetCount) {
+  if ($CompareAllFiles) {
+    $sourceInventory = Get-RelativeFileInventory -Root $Source
+    $targetInventory = Get-RelativeFileInventory -Root $Target
+    if ($sourceInventory.Count -ne $targetInventory.Count) {
       return $false
+    }
+
+    foreach ($relativePath in $sourceInventory.Hashes.Keys) {
+      if (!$targetInventory.Hashes.ContainsKey($relativePath) -or
+          $sourceInventory.Hashes[$relativePath] -ne $targetInventory.Hashes[$relativePath]) {
+        return $false
+      }
+    }
+  } else {
+    foreach ($relativePath in $RequiredFiles) {
+      $sourceFile = Join-Path $Source $relativePath
+      $targetFile = Join-Path $Target $relativePath
+      if ((Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash -ne
+          (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256).Hash) {
+        return $false
+      }
     }
   }
 
@@ -74,7 +89,41 @@ function Test-BundleTarget {
   return $encryptedCount -eq 0
 }
 
+function Get-RelativeFileInventory {
+  param(
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $rootPath = (Resolve-Path -LiteralPath $Root).ProviderPath.TrimEnd('\')
+  $rootPrefix = "$rootPath\"
+  $hashes = [System.Collections.Generic.Dictionary[string, string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+
+  foreach ($file in Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force) {
+    if (!$file.FullName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Runtime file escaped its source root: $($file.FullName)"
+    }
+
+    $relativePath = $file.FullName.Substring($rootPrefix.Length)
+    if ($hashes.ContainsKey($relativePath)) {
+      throw "Duplicate runtime path found: $relativePath"
+    }
+
+    $hashes.Add(
+      $relativePath,
+      (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    )
+  }
+
+  [pscustomobject]@{
+    Count = $hashes.Count
+    Hashes = $hashes
+  }
+}
+
 function Install-BundleTarget {
+  [CmdletBinding(SupportsShouldProcess)]
   param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$Target,
@@ -82,7 +131,10 @@ function Install-BundleTarget {
     [switch]$Recursive
   )
 
-  if (Test-BundleTarget -Source $Source -Target $Target -RequiredFiles $RequiredFiles -CompareFileCount:$Recursive) {
+  $installWhatIf = [bool]$WhatIfPreference
+  $WhatIfPreference = $false
+
+  if (Test-BundleTarget -Source $Source -Target $Target -RequiredFiles $RequiredFiles -CompareAllFiles:$Recursive) {
     Write-Output "healthy: $Target"
     return
   }
@@ -91,10 +143,11 @@ function Install-BundleTarget {
     throw "Runtime target exists but failed validation; refusing to overwrite it: $Target"
   }
 
-  if ($DryRun) {
-    Write-Output "would-create: $Target"
+  $WhatIfPreference = $installWhatIf
+  if (!$PSCmdlet.ShouldProcess($Target, "Install validated Codex Desktop runtime")) {
     return
   }
+  $WhatIfPreference = $false
 
   $parent = Split-Path -Parent $Target
   $leaf = Split-Path -Leaf $Target
@@ -112,14 +165,38 @@ function Install-BundleTarget {
     throw "robocopy failed with exit code $robocopyExitCode; staging retained at $staging"
   }
 
-  if (!(Test-BundleTarget -Source $Source -Target $staging -RequiredFiles $RequiredFiles -CompareFileCount:$Recursive)) {
+  if (!(Test-BundleTarget -Source $Source -Target $staging -RequiredFiles $RequiredFiles -CompareAllFiles:$Recursive)) {
     throw "Staged runtime failed validation; staging retained at $staging"
   }
 
-  if ($PSCmdlet.ShouldProcess($Target, "Install validated Codex Desktop runtime")) {
-    Move-Item -LiteralPath $staging -Destination $Target
-    Write-Output "created: $Target"
+  if (Test-Path -LiteralPath $Target) {
+    throw "Runtime target appeared during staging; refusing to replace it. Staging retained at $staging"
   }
+
+  try {
+    [System.IO.Directory]::Move($staging, $Target)
+  } catch {
+    throw "Failed to install the validated runtime; staging retained at $staging. $($_.Exception.Message)"
+  }
+  Write-Output "created: $Target"
+}
+
+function Invoke-RuntimeSmokeTest {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Executable,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [int]$OutputLines = [int]::MaxValue
+  )
+
+  $output = @(& $Executable @Arguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  if ($null -eq $exitCode -or $exitCode -ne 0) {
+    $firstLine = $output | Select-Object -First 1
+    throw "$Name smoke test failed with exit code $exitCode. First output: $firstLine"
+  }
+
+  $output | Select-Object -First $OutputLines
 }
 
 $desktop = Get-AppxPackage -Name OpenAI.Codex |
@@ -136,8 +213,19 @@ $codexFiles = @(
   'codex-windows-sandbox-setup.exe',
   'codex-command-runner.exe'
 )
-$cuaFiles = @('manifest.json', 'bin/node.exe', 'bin/node_repl.exe')
 $cuaSource = Join-Path $resources 'cua_node'
+$cuaManifestPath = Join-Path $cuaSource 'manifest.json'
+if (!(Test-Path -LiteralPath $cuaManifestPath -PathType Leaf)) {
+  throw "CUA runtime manifest is missing: $cuaManifestPath"
+}
+
+$cuaManifest = Get-Content -LiteralPath $cuaManifestPath -Raw | ConvertFrom-Json
+if ($cuaManifest.platform -ne 'windows' -or
+    [string]::IsNullOrWhiteSpace([string]$cuaManifest.node_path) -or
+    [string]::IsNullOrWhiteSpace([string]$cuaManifest.node_repl_path)) {
+  throw "CUA runtime manifest does not match the supported Windows schema: $cuaManifestPath"
+}
+$cuaFiles = @('manifest.json', [string]$cuaManifest.node_path, [string]$cuaManifest.node_repl_path)
 
 $codexHash = (Get-DesktopBundleHash -Root $resources -RelativePaths $codexFiles).Substring(0, 16)
 $cuaHash = (Get-DesktopBundleHash -Root $cuaSource -RelativePaths $cuaFiles).Substring(0, 16)
@@ -150,12 +238,12 @@ Write-Output "  Resources:    $resources"
 Write-Output "  Codex target: $codexTarget"
 Write-Output "  CUA target:   $cuaTarget"
 
-Install-BundleTarget -Source $resources -Target $codexTarget -RequiredFiles $codexFiles
-Install-BundleTarget -Source $cuaSource -Target $cuaTarget -RequiredFiles $cuaFiles -Recursive
+Install-BundleTarget -Source $resources -Target $codexTarget -RequiredFiles $codexFiles -WhatIf:$isWhatIf
+Install-BundleTarget -Source $cuaSource -Target $cuaTarget -RequiredFiles $cuaFiles -Recursive -WhatIf:$isWhatIf
 
-if (!$DryRun) {
-  & (Join-Path $codexTarget 'codex.exe') --version
-  & (Join-Path $cuaTarget 'bin\node.exe') --version
-  & (Join-Path $cuaTarget 'bin\node_repl.exe') --help | Select-Object -First 1
+if (!$isWhatIf) {
+  Invoke-RuntimeSmokeTest -Name 'codex.exe' -Executable (Join-Path $codexTarget 'codex.exe') -Arguments @('--version')
+  Invoke-RuntimeSmokeTest -Name 'node.exe' -Executable (Join-Path $cuaTarget $cuaManifest.node_path) -Arguments @('--version')
+  Invoke-RuntimeSmokeTest -Name 'node_repl.exe' -Executable (Join-Path $cuaTarget $cuaManifest.node_repl_path) -Arguments @('--help') -OutputLines 1
   Write-Output "Runtime recovery completed. Fully quit and restart Codex Desktop so it can reconcile the Chrome native host."
 }
