@@ -1,6 +1,6 @@
 # Codex Browser Use Fix
 
-[中文](#中文) | [English](#english) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
+[中文](#中文) | [English](#english) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Chrome Native Host repair](./docs/chrome-native-host-runtime-repair.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [Runtime repair](./scripts/repair-codex-chrome-runtime.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
 
 This repository documents Windows workarounds for repairing Codex Desktop's bundled browser plugins when they are present locally but unavailable or broken in the plugin UI. It covers the in-app `Browser` plugin and the external `Chrome` plugin.
 
@@ -17,6 +17,8 @@ All examples are sanitized. Replace placeholders such as `<Codex install directo
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\check-codex-browser-health.ps1
 ```
+
+如果 Chrome 扩展已经启用、插件也显示已安装，但 UI 仍提示 `Failed to install plugin`，并且 Native Host 注册表与 manifest 都不存在，请使用 [Chrome Native Host runtime repair](./docs/chrome-native-host-runtime-repair.md)。不要用计划任务反复执行 `codex plugin add chrome@openai-bundled`；CLI 安装插件不等于 Desktop 已完成 Native Host reconcile。
 
 如果浏览器能力又突然失效，先运行健康检查并比较 AppX 与 runtime manifest。只有旧版 `Browser Use` 流程依赖 `remote_control`；当前 `Browser` / `Chrome` 插件不应再添加这个已移除的 feature。
 
@@ -497,6 +499,8 @@ This guide fixes cases where Codex Desktop's bundled `Browser` or `Chrome` plugi
 Current Codex Desktop builds should own the `openai-bundled` lifecycle. Desktop materializes an AppX-specific runtime marketplace under `%USERPROFILE%\.codex\.tmp\bundled-marketplaces` and registers it automatically. Treat a non-versioned mirror as an older-build compatibility fallback, not the primary update mechanism.
 
 If browser support breaks again, run the health check and compare AppX and runtime manifests first. Only the legacy `Browser Use` flow depended on `remote_control`; current Browser and Chrome plugins must not add this removed feature.
+
+If the Chrome extension and Codex plugin are installed but the Native Host registry key and manifest are both missing, follow [Chrome Native Host runtime repair](./docs/chrome-native-host-runtime-repair.md). Do not use a scheduled `codex plugin add chrome@openai-bundled` job: CLI installation does not replace Desktop's Native Host reconciliation.
 
 ### When to use this
 
