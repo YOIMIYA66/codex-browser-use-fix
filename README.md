@@ -1,6 +1,6 @@
 # Codex Browser Use Fix
 
-[中文](#中文) | [English](#english) | [HTML guide](./browser-use-plugin-tutorial.html)
+[中文](#中文) | [English](#english) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
 
 This repository documents Windows workarounds for repairing Codex Desktop's bundled browser plugins when they are present locally but unavailable or broken in the plugin UI. It covers the in-app `Browser` plugin and the external `Chrome` plugin.
 
@@ -10,9 +10,15 @@ All examples are sanitized. Replace placeholders such as `<Codex install directo
 
 这份教程用于修复 Codex Desktop 更新后 `Browser Use` / `Browser` / `Chrome` 消失、插件页能看到但安装失败、或 `codex debug prompt-input` 无法加载插件的问题。
 
-推荐方案是把 `openai-bundled` marketplace 复制到 Codex 的 bundled marketplace 工作区，然后让 Codex 注册这个相对稳定的用户侧路径。这样 Codex 更新后，即使安装目录里的版本号变化，`Browser Use` 也不会因为 marketplace source 指向旧安装路径而失效。
+当前版本的首选方案是让 Codex Desktop 自动把 AppX 包内的 `openai-bundled` 同步到 `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled-appx-<desktop-version>`，并由 Desktop 自动注册该运行时路径。不要长期指向 WindowsApps 安装目录，也不要把手工复制的旧快照当成正常更新源。
 
-如果固定 marketplace 还在，但 `Browser Use` 或新版 `Browser` 又突然失效，优先检查插件 cache 和配置项。近期常见原因是 `%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use` 或 `%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser\latest` 被清理，或 `config.toml` 里丢失了对应插件启用项 / `remote_control`。
+本次完整经验、版本分层、EFS 诊断和恢复顺序见 [Update-safe bundled marketplace](./docs/update-safe-bundled-marketplace.md)。可以先运行只读检查：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-codex-browser-health.ps1
+```
+
+如果浏览器能力又突然失效，先运行健康检查并比较 AppX 与 runtime manifest。只有旧版 `Browser Use` 流程依赖 `remote_control`；当前 `Browser` / `Chrome` 插件不应再添加这个已移除的 feature。
 
 ### 适用场景
 
@@ -27,7 +33,27 @@ All examples are sanitized. Replace placeholders such as `<Codex install directo
 - `codex debug prompt-input` 不再显示 `chrome:Chrome`。
 - `@chrome` 已在配置中启用，但运行时连不上 Chrome 或缺少 `node_repl` helper。
 
-### 快速恢复：marketplace 还在但 Browser Use 又失效
+### 2026-07 更新：先让 Desktop 原生同步
+
+新版 Desktop 会自动维护 AppX 专用 runtime marketplace。例如 Desktop `26.721.4979.0` 会注册类似下面的路径：
+
+```text
+%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled-appx-26.721.4979.0
+```
+
+健康状态不是“目录名永远不变”，而是 `codex plugin marketplace list` 指向当前 Desktop 生成的 runtime marketplace，并且其中 Browser/Chrome/Computer Use 的 manifest 版本与当前 AppX 包一致。
+
+如果配置仍指向 `%USERPROFILE%\.codex\marketplaces\openai-bundled\<旧版本>`，先备份配置、移除旧注册并完整重启 Desktop。不要立即把旧快照注册回来：
+
+```powershell
+codex plugin marketplace remove openai-bundled
+```
+
+当前 CLI 已移除 `remote_control` feature。新配置不要再添加 `remote_control = true`；README 后面的相关命令只适用于历史 `browser-use` 插件恢复。
+
+### 旧版兼容：marketplace 还在但 Browser Use 又失效
+
+> 本节仅适用于仍随包提供 `browser-use`、且 `codex features list` 仍列出 `remote_control` 的旧版 Codex。当前版本请使用上面的 Desktop 原生同步流程。
 
 如果下面路径存在：
 
@@ -88,32 +114,19 @@ enabled = true
 '@
 }
 
-$config = Get-Content -LiteralPath $configPath -Raw
-
-if ($config -match '(?m)^\[features\]') {
-  if ($config -notmatch '(?m)^remote_control\s*=') {
-    $config = $config -replace '(?m)^\[features\]\s*$', "[features]`nremote_control = true"
-  } else {
-    $config = $config -replace '(?m)^remote_control\s*=.*$', 'remote_control = true'
-  }
-
-  Set-Content -LiteralPath $configPath -Value $config -NoNewline
-} else {
-  Add-Content -LiteralPath $configPath -Value @'
-
-[features]
-remote_control = true
-'@
+$features = codex features list
+if ($features | Select-String -Pattern "^remote_control\s") {
+  codex features enable remote_control
 }
-
-codex features enable remote_control
-codex features list | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
+$features | Select-String -Pattern "remote_control|browser_use|in_app_browser|computer_use|plugins"
 codex debug prompt-input "test browser use" | Select-String -Pattern "browser-use:browser|Browser Use|failed to load plugin|plugin is not installed"
 ```
 
 恢复后重启 Codex Desktop。
 
-### 快速恢复：Browser / Chrome 插件 cache 过期
+### 最后恢复：Browser / Chrome 插件 cache 过期
+
+以下手工同步只在 Desktop 多次完整重启后仍无法生成匹配当前 AppX 的 runtime marketplace 时使用。
 
 Codex Desktop 更新后，安装包中的 `browser` / `chrome` 插件版本可能变成类似 `26.519.41501` 的版本。如果用户目录里的 marketplace 或 cache 仍是旧版本，`@browser` / `@chrome` 可能加载到过期插件代码。新版内置浏览器插件名通常是 `browser@openai-bundled`，不是旧的 `browser-use@openai-bundled`。
 
@@ -200,8 +213,7 @@ foreach ($plugin in @("browser", "chrome")) {
   Sync-TreeByHash -Source $pluginSrc -Destination "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\$plugin\latest"
 }
 
-codex features enable remote_control
-codex features list | Select-String -Pattern "remote_control|plugins|browser_use|in_app_browser|computer_use"
+codex features list | Select-String -Pattern "plugins|browser_use|in_app_browser|computer_use"
 codex debug prompt-input "test browser and chrome plugins" | Select-String -Pattern "browser:browser|chrome:Chrome|failed to load plugin|plugin is not installed"
 ```
 
@@ -218,8 +230,6 @@ enabled = true
 [plugins."browser@openai-bundled"]
 enabled = true
 
-[features]
-remote_control = true
 ```
 
 不要用会整体 `Set-Content` 重写 `config.toml` 的脚本处理包含中文路径的配置。PowerShell 编码不一致时，`[projects.'d:\中文路径']` 这类表头可能被写成乱码，导致 Codex 报 TOML parse error。修改配置前至少先备份，并在修改后验证：
@@ -319,15 +329,15 @@ Get-Content "$browserUsePath\.codex-plugin\plugin.json"
 
 后续命令里的 `$version` 要使用这个 manifest 中的实际版本，不要照抄示例版本号。
 
-### 3. 推荐：固定 openai-bundled marketplace 路径
+### 3. 兼容方案：固定 openai-bundled marketplace 路径
 
-不要长期注册带 Codex 版本号的安装目录，例如：
+以下步骤用于旧版 Desktop 或原生同步反复失败的机器，不是新版 Desktop 的默认更新方式。不要长期注册带 Codex 版本号的 WindowsApps 安装目录，例如：
 
 ```text
 <Codex安装目录>\app\resources\plugins\openai-bundled
 ```
 
-Codex 更新后这个目录名通常会变化。这里选择复制到 Codex 用户目录下的 bundled marketplace 工作区：
+Codex 更新后这个目录名通常会变化。旧版兼容路径是：
 
 ```text
 %USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled
@@ -357,9 +367,9 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
 }
 ```
 
-这里使用二进制读写复制，而不是普通 `Copy-Item -Recurse`，是为了避开 WindowsApps 等目录可能带来的特殊文件属性问题。
+这里使用二进制读写复制，而不是普通 `Copy-Item -Recurse`，是为了避开 WindowsApps 等目录可能带来的特殊文件属性问题。执行前先确认当前 Desktop 没有生成可用的 `openai-bundled-appx-*` runtime marketplace。
 
-### 4. 重新注册固定 marketplace
+### 4. 旧版兼容：重新注册 marketplace
 
 如果之前已经注册过 `openai-bundled`，先移除旧注册：
 
@@ -383,9 +393,9 @@ source = "\\?\<用户目录>\.codex\.tmp\bundled-marketplaces\openai-bundled"
 
 重点是 source 不再指向带版本号的 Codex 安装目录。
 
-### 5. 启用 Browser Use 所需配置
+### 5. 旧版兼容：启用 Browser Use 所需配置
 
-开启 `remote_control`：
+只有 `codex features list` 仍列出 `remote_control` 时才开启：
 
 ```powershell
 codex features enable remote_control
@@ -470,11 +480,11 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
 
 **为什么使用 `.codex\.tmp\bundled-marketplaces`？**
 
-它仍在用户目录下，不会带 Codex 安装包版本号；同时它更接近 Codex 自己维护 bundled marketplace 的位置，未来更新后更可能被新版内容刷新。
+这是 Codex Desktop 自己物化 bundled marketplace 的工作区。新版通常使用 `openai-bundled-appx-<desktop-version>`，旧版可能使用无版本目录；应以 `codex plugin marketplace list` 的当前注册为准。
 
 **使用 `.tmp` 有什么风险？**
 
-`.tmp` 可能被 Codex 清理或重建。如果发生这种情况，重新复制 bundled marketplace 并执行 `codex plugin marketplace add` 即可恢复。
+`.tmp` 会被 Codex 清理或重建，这是正常生命周期。先完整重启 Desktop 让它重新生成；只有自动同步持续失败时，才使用手工复制和 `plugin marketplace add` 兼容方案。
 
 **为什么示例版本号会变化？**
 
@@ -484,9 +494,9 @@ codex debug prompt-input "test browser use" | Select-String -Pattern "browser-us
 
 This guide fixes cases where Codex Desktop's bundled `Browser` or `Chrome` plugin disappears after an update, appears in the plugin UI but fails to install, or cannot be loaded by `codex debug prompt-input`.
 
-The recommended fix is to mirror the `openai-bundled` marketplace into Codex's bundled marketplace workspace under the user profile and register that path. This avoids breakage when Codex updates and the versioned installation directory changes.
+Current Codex Desktop builds should own the `openai-bundled` lifecycle. Desktop materializes an AppX-specific runtime marketplace under `%USERPROFILE%\.codex\.tmp\bundled-marketplaces` and registers it automatically. Treat a non-versioned mirror as an older-build compatibility fallback, not the primary update mechanism.
 
-If the mirrored marketplace still exists but Browser Use or the newer Browser plugin breaks again, check the plugin cache and config first. Common failure modes are `%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use` or `%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser\latest` being removed, or the plugin enablement / `remote_control` disappearing from `config.toml`.
+If browser support breaks again, run the health check and compare AppX and runtime manifests first. Only the legacy `Browser Use` flow depended on `remote_control`; current Browser and Chrome plugins must not add this removed feature.
 
 ### When to use this
 
@@ -501,7 +511,9 @@ If the mirrored marketplace still exists but Browser Use or the newer Browser pl
 - `codex debug prompt-input` no longer lists `chrome:Chrome`.
 - `@chrome` is enabled in config but cannot connect or cannot start its `node_repl` helper.
 
-### Quick recovery: marketplace exists but Browser Use broke again
+### Legacy compatibility: marketplace exists but Browser Use broke again
+
+Use this section only when the installed Codex build still ships `browser-use` and `codex features list` still includes `remote_control`.
 
 If this path exists:
 
@@ -514,9 +526,9 @@ rebuild the cache and config using the same recovery script from the Chinese sec
 - read `version` from `.codex-plugin\plugin.json`
 - copy `plugins\browser-use` into `%USERPROFILE%\.codex\plugins\cache\openai-bundled\browser-use\<version>`
 - keep `[plugins."browser-use@openai-bundled"] enabled = true`
-- keep `[features] remote_control = true`
+- enable `remote_control` only when that feature is still listed by the old CLI
 
-### Quick recovery: stale Browser / Chrome plugin cache
+### Last-resort recovery: stale Browser / Chrome plugin cache
 
 After a Codex Desktop update, the bundled `browser` / `chrome` plugin version can change to a package-derived version such as `26.519.41501`. If the user-side marketplace or plugin cache still contains the older version, `@browser` / `@chrome` can load stale plugin code. Newer in-app browser builds normally use `browser@openai-bundled`, not the older `browser-use@openai-bundled`.
 
@@ -550,8 +562,6 @@ enabled = true
 [plugins."browser@openai-bundled"]
 enabled = true
 
-[features]
-remote_control = true
 ```
 
 After editing config, verify it still parses:
@@ -643,7 +653,9 @@ Look for the version:
 
 Use the actual manifest version in later commands. Do not copy the sample version blindly.
 
-### 3. Recommended: pin openai-bundled to the bundled marketplace workspace
+### 3. Compatibility fallback: mirror openai-bundled to the bundled marketplace workspace
+
+This section applies to older Desktop builds or repeated native reconciliation failures. Current builds should use the AppX-specific runtime marketplace that Desktop registers automatically.
 
 Avoid permanently registering the versioned Codex install path:
 
@@ -683,7 +695,7 @@ Get-ChildItem -LiteralPath $srcRoot -Force -Recurse -File | ForEach-Object {
 
 The script copies file bytes directly instead of using plain `Copy-Item -Recurse`, which avoids special file-attribute issues in some Windows install directories.
 
-### 4. Re-register the stable marketplace
+### 4. Legacy compatibility: re-register the stable marketplace
 
 If `openai-bundled` is already registered, remove the old source first:
 
@@ -707,9 +719,9 @@ source = "\\?\<user directory>\.codex\.tmp\bundled-marketplaces\openai-bundled"
 
 The important part is that source no longer points to the versioned Codex install directory.
 
-### 5. Enable Browser Use settings
+### 5. Legacy compatibility: enable Browser Use settings
 
-Enable `remote_control`:
+For legacy `browser-use` builds only, enable `remote_control` if it is still listed by `codex features list`:
 
 ```powershell
 codex features enable remote_control
@@ -798,7 +810,7 @@ It is still under the user profile, so it avoids versioned install paths. It is 
 
 **What is the risk of using `.tmp`?**
 
-`.tmp` may be cleaned or rebuilt by Codex. If that happens, copy the bundled marketplace again and rerun `codex plugin marketplace add`.
+`.tmp` may be cleaned or rebuilt by Codex as part of its normal lifecycle. Fully restart Desktop and allow native reconciliation first; copy and register a marketplace manually only if that repeatedly fails.
 
 **Why does the sample version change?**
 
