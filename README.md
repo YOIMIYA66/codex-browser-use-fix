@@ -1,6 +1,6 @@
 # Codex Browser Use Fix
 
-[中文](#中文) | [English](#english) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Chrome Native Host repair](./docs/chrome-native-host-runtime-repair.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [Runtime repair](./scripts/repair-codex-chrome-runtime.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
+[中文](#中文) | [English](#english) | [26.721 → 26.727 中文复盘](./docs/26.721-to-26.727-browser-recovery.zh-CN.md) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Chrome Native Host repair](./docs/chrome-native-host-runtime-repair.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [Runtime repair](./scripts/repair-codex-chrome-runtime.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
 
 This repository documents Windows workarounds for repairing Codex Desktop's bundled browser plugins when they are present locally but unavailable or broken in the plugin UI. It covers the in-app `Browser` plugin and the external `Chrome` plugin.
 
@@ -13,6 +13,8 @@ All examples are sanitized. Replace placeholders such as `<Codex install directo
 当前版本的首选方案是让 Codex Desktop 自动把 AppX 包内的 `openai-bundled` 同步到 `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled-appx-<desktop-version>`，并由 Desktop 自动注册该运行时路径。不要长期指向 WindowsApps 安装目录，也不要把手工复制的旧快照当成正常更新源。
 
 如果 Desktop 多次完整重启后仍没有生成当前 AppX 专用市场，或市场已经更新但 `codex plugin list --json` 仍显示旧版 Browser/Chrome/Computer Use，请使用 [Update-safe bundled marketplace](./docs/update-safe-bundled-marketplace.md#follow-up-incident-desktop-did-not-materialize-the-current-marketplace) 中的一次性恢复流程。该流程使用暂存目录、去除加密属性、全量 SHA256 校验和原子落位；恢复后只执行一次 `plugin add`，不要创建自动同步任务。
+
+从 `26.721` 更新到 `26.727` 后出现 Google Chrome 整行禁用的原因、修复过程中踩到的坑，以及下次更新的快速判断顺序，见 [26.721 → 26.727 浏览器能力故障复盘](./docs/26.721-to-26.727-browser-recovery.zh-CN.md)。
 
 本次完整经验、版本分层、EFS 诊断和恢复顺序见 [Update-safe bundled marketplace](./docs/update-safe-bundled-marketplace.md)。可以先运行只读检查：
 
