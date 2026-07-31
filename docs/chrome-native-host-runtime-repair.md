@@ -64,6 +64,17 @@ This is more precise than relying on the UI's generic `Failed to install plugin`
 
 ## Diagnostic order
 
+### Current Native Host name
+
+Current builds use `com.openai.codexextension`:
+
+```text
+HKCU\Software\Google\Chrome\NativeMessagingHosts\com.openai.codexextension
+%LOCALAPPDATA%\OpenAI\extension\com.openai.codexextension.json
+```
+
+Checking only the older `com.openai.codex` key produces a false missing-host result on current builds. Prefer the Chrome plugin's generated `check-native-host-manifest.js` because it reads the expected host name and extension origins for that plugin version.
+
 ### 1. Check the three independent states
 
 ```powershell
@@ -149,6 +160,19 @@ HKCU\Software\Google\Chrome\NativeMessagingHosts\com.openai.codexextension
 ```
 
 Re-run `check-native-host-manifest.js --json`. Success means exit code `0` and `correct: true`.
+
+If the manifest check, extension check, and host executable all pass but browser discovery still reports Chrome as unavailable, check whether Chrome is running before reinstalling anything:
+
+```powershell
+$chrome = "$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest"
+$node = (Get-Command node).Source
+
+& $node "$chrome\scripts\chrome-is-running.js" --browser chrome --check
+& $node "$chrome\scripts\check-extension-installed.js" --browser chrome --json
+& $node "$chrome\scripts\check-native-host-manifest.js" --browser chrome --json
+```
+
+`chrome-is-running` exit code `1` means the browser is closed, not that the plugin is damaged. Start Chrome with the profile selected by the extension check, then retry the live connection. A complete smoke test should cover both surfaces separately: the in-app Browser can be healthy while Chrome is merely not running.
 
 ## Do not do these
 
