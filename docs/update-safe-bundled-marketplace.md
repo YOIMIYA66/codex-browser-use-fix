@@ -52,6 +52,27 @@ After a later Desktop update, the native reconciler automatically produced:
 
 This is the healthy state: the Desktop package version and plugin version do not need to be equal, but each runtime plugin version must match the same plugin manifest in the current package.
 
+## Follow-up incident: Desktop did not materialize the current marketplace
+
+A later update exposed a second failure mode:
+
+| Layer | Observed value |
+|---|---|
+| Codex Desktop package | `26.727.4816.0` |
+| Current bundled Browser/Chrome/Computer Use | `26.727.40816` |
+| Registered marketplace before recovery | `openai-bundled-appx-26.721.4979.0` |
+| Installed Browser/Chrome/Computer Use records | `26.721.41059` |
+| Expected current marketplace | `openai-bundled-appx-26.727.4816.0` |
+
+The current AppX resources existed, but Desktop did not create the expected user-side marketplace after multiple complete restarts. Removing the stale registration correctly exposed the missing current marketplace, but it also made all bundled plugins disappear until a current source was registered. The old marketplace and plugin caches were not deleted; they were simply no longer active.
+
+Recovery required two separate operations:
+
+1. Materialize the current AppX marketplace into the exact AppX-specific user path without propagating Application Protected/EFS attributes.
+2. Re-add Browser, Chrome, and Computer Use once from that current marketplace so their installed records and caches moved from `26.721.41059` to `26.727.40816`.
+
+This is a one-time recovery, not a synchronization strategy. Do not turn the `plugin add` commands into a scheduled task.
+
 ## Version layers are independent
 
 Do not compare unrelated version numbers as though they are one installation:
@@ -80,6 +101,7 @@ It verifies:
 - the installed Desktop package and current AppX resource path
 - the active `openai-bundled` marketplace root
 - Browser, Chrome, and Computer Use versions in both locations
+- the installed version of each bundled plugin when that plugin is installed
 - whether the active marketplace root is EFS-encrypted
 - whether the active source is managed for the current AppX version
 
@@ -125,6 +147,8 @@ codex plugin marketplace remove openai-bundled
 
 Fully restart Codex Desktop and let it register the current AppX runtime marketplace. Do not immediately register an old snapshot again.
 
+Removing the registration does not delete old marketplace or cache directories. However, if Desktop still fails to materialize a current source, Browser, Chrome, and Computer Use will be absent from `codex plugin list` until the current marketplace is recovered. Keep the configuration backup and proceed to the last-resort flow below instead of registering the old source again.
+
 If the runtime marketplace remains missing or incomplete, check encryption and permissions:
 
 ```powershell
@@ -160,7 +184,98 @@ Only copy from the current AppX package when all of these are true:
 - EFS and file-lock conditions have been checked.
 - `config.toml` has been backed up.
 
-Copying directly into plugin caches is fragile because Chrome may hold `extension-host.exe` open. Prefer hash-aware copy-over behavior and never delete `latest` before a replacement is ready.
+Copying directly into plugin caches is fragile because Chrome may hold `extension-host.exe` open. Materialize the marketplace first, validate it, and let `codex plugin add` create versioned caches.
+
+The following pattern was validated during the `26.727.4816.0` incident. It refuses to overwrite an existing target, copies through a unique staging directory, strips encryption attributes, validates every file by relative path and SHA256, and atomically moves the validated tree into place:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+
+$appx = Get-AppxPackage -Name OpenAI.Codex |
+  Sort-Object Version -Descending |
+  Select-Object -First 1
+
+$source = Join-Path $appx.InstallLocation 'app\resources\plugins\openai-bundled'
+$parent = Join-Path $env:USERPROFILE '.codex\.tmp\bundled-marketplaces'
+$target = Join-Path $parent "openai-bundled-appx-$($appx.Version)"
+$staging = Join-Path $parent ('.staging-' + [guid]::NewGuid().ToString('N'))
+
+if (!(Test-Path -LiteralPath $source -PathType Container)) {
+  throw "Bundled marketplace source is missing: $source"
+}
+if (Test-Path -LiteralPath $target) {
+  throw "Target already exists; validate it instead of overwriting it: $target"
+}
+
+New-Item -ItemType Directory -Path $parent -Force | Out-Null
+New-Item -ItemType Directory -Path $staging | Out-Null
+
+& robocopy $source $staging /E /COPY:DAT /DCOPY:DAT /A-:E /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP
+if ($LASTEXITCODE -gt 7) {
+  throw "robocopy failed with exit code $LASTEXITCODE; staging retained: $staging"
+}
+
+$sourceFiles = @(Get-ChildItem -LiteralPath $source -Recurse -Force -File)
+$stagedFiles = @(Get-ChildItem -LiteralPath $staging -Recurse -Force -File)
+if ($sourceFiles.Count -ne $stagedFiles.Count) {
+  throw "File count mismatch; staging retained: $staging"
+}
+
+$stagedByRelativePath = @{}
+foreach ($file in $stagedFiles) {
+  $relativePath = [IO.Path]::GetRelativePath($staging, $file.FullName)
+  $stagedByRelativePath[$relativePath] = $file.FullName
+}
+
+foreach ($file in $sourceFiles) {
+  $relativePath = [IO.Path]::GetRelativePath($source, $file.FullName)
+  $stagedPath = $stagedByRelativePath[$relativePath]
+  if ($null -eq $stagedPath) {
+    throw "Missing staged file: $relativePath"
+  }
+  if ((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -ne
+      (Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256).Hash) {
+    throw "SHA256 mismatch: $relativePath"
+  }
+}
+
+$encrypted = @(Get-ChildItem -LiteralPath $staging -Recurse -Force |
+  Where-Object { $_.Attributes -band [IO.FileAttributes]::Encrypted })
+if ($encrypted.Count -ne 0) {
+  throw "Staging contains encrypted entries: $($encrypted.Count)"
+}
+if (Test-Path -LiteralPath $target) {
+  throw "Target appeared during validation; staging retained: $staging"
+}
+
+[IO.Directory]::Move($staging, $target)
+```
+
+Register the validated marketplace and inspect installed versions:
+
+```powershell
+$appx = Get-AppxPackage -Name OpenAI.Codex |
+  Sort-Object Version -Descending |
+  Select-Object -First 1
+$target = Join-Path $env:USERPROFILE ".codex\.tmp\bundled-marketplaces\openai-bundled-appx-$($appx.Version)"
+
+codex plugin marketplace add $target --json
+codex plugin marketplace list --json
+codex plugin list --available --json
+```
+
+If Browser, Chrome, or Computer Use still reports an older installed version, reinstall each one once from the current marketplace:
+
+```powershell
+foreach ($plugin in @('computer-use', 'browser', 'chrome')) {
+  codex plugin add "$plugin@openai-bundled" --json
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to install $plugin from the recovered marketplace."
+  }
+}
+```
+
+Then fully quit Desktop, including its tray process, and restart it. Desktop still owns Chrome Native Host reconciliation. Do not manually create the registry key or manifest, and do not run the historical `installManifest.mjs` script.
 
 ## Other warnings that are not this bug
 
@@ -171,4 +286,4 @@ Copying directly into plugin caches is fragile because Chrome may hold `extensio
 
 ## English summary
 
-Let current Codex Desktop builds own the bundled marketplace lifecycle. A healthy installation points `openai-bundled` at the current AppX-specific runtime marketplace under `.codex\.tmp\bundled-marketplaces`, and the runtime Browser/Chrome/Computer Use manifests match the manifests shipped in the installed AppX package. Treat a non-versioned stable path as an older-build compatibility fallback and direct cache copying as the last recovery step.
+Let current Codex Desktop builds own the bundled marketplace lifecycle. A healthy installation points `openai-bundled` at the current AppX-specific runtime marketplace under `.codex\.tmp\bundled-marketplaces`; the runtime and installed Browser/Chrome/Computer Use versions match the manifests shipped in the installed AppX package. If Desktop repeatedly fails to materialize that marketplace, use a validated one-time recovery rather than a scheduled synchronization task. Treat a non-versioned stable path as an older-build compatibility fallback and direct cache copying as the last recovery step.

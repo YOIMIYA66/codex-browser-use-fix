@@ -12,6 +12,8 @@ All examples are sanitized. Replace placeholders such as `<Codex install directo
 
 当前版本的首选方案是让 Codex Desktop 自动把 AppX 包内的 `openai-bundled` 同步到 `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled-appx-<desktop-version>`，并由 Desktop 自动注册该运行时路径。不要长期指向 WindowsApps 安装目录，也不要把手工复制的旧快照当成正常更新源。
 
+如果 Desktop 多次完整重启后仍没有生成当前 AppX 专用市场，或市场已经更新但 `codex plugin list --json` 仍显示旧版 Browser/Chrome/Computer Use，请使用 [Update-safe bundled marketplace](./docs/update-safe-bundled-marketplace.md#follow-up-incident-desktop-did-not-materialize-the-current-marketplace) 中的一次性恢复流程。该流程使用暂存目录、去除加密属性、全量 SHA256 校验和原子落位；恢复后只执行一次 `plugin add`，不要创建自动同步任务。
+
 本次完整经验、版本分层、EFS 诊断和恢复顺序见 [Update-safe bundled marketplace](./docs/update-safe-bundled-marketplace.md)。可以先运行只读检查：
 
 ```powershell
@@ -19,6 +21,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-codex-browser-health.ps
 ```
 
 如果 Chrome 扩展已经启用、插件也显示已安装，但 UI 仍提示 `Failed to install plugin`，并且 Native Host 注册表与 manifest 都不存在，请使用 [Chrome Native Host runtime repair](./docs/chrome-native-host-runtime-repair.md)。不要用计划任务反复执行 `codex plugin add chrome@openai-bundled`；CLI 安装插件不等于 Desktop 已完成 Native Host reconcile。
+
+当前 Chrome Native Host 名称是 `com.openai.codexextension`。只检查旧键 `com.openai.codex` 会产生误报；优先运行 Chrome 插件自带的 `check-native-host-manifest.js`。如果扩展、manifest 和宿主程序均正确但 Chrome 控制仍不可用，先确认 Chrome 是否正在运行。
 
 如果浏览器能力又突然失效，先运行健康检查并比较 AppX 与 runtime manifest。只有旧版 `Browser Use` 流程依赖 `remote_control`；当前 `Browser` / `Chrome` 插件不应再添加这个已移除的 feature。
 

@@ -49,6 +49,24 @@ if ($LASTEXITCODE -ne 0) {
   throw "Unable to list Codex marketplaces.`n$($marketplaceOutput -join [Environment]::NewLine)"
 }
 
+$pluginOutput = @(& codex plugin list --json 2>&1)
+if ($LASTEXITCODE -ne 0) {
+  throw "Unable to list installed Codex plugins.`n$($pluginOutput -join [Environment]::NewLine)"
+}
+
+try {
+  $pluginState = ($pluginOutput -join [Environment]::NewLine) | ConvertFrom-Json
+} catch {
+  throw "Unable to parse 'codex plugin list --json': $($_.Exception.Message)"
+}
+
+$installedByName = @{}
+foreach ($installedPlugin in @($pluginState.installed)) {
+  if ($null -ne $installedPlugin.name) {
+    $installedByName[[string]$installedPlugin.name] = $installedPlugin
+  }
+}
+
 $marketplaceLine = $marketplaceOutput |
   Where-Object { $_ -match '^openai-bundled\s+' } |
   Select-Object -First 1
@@ -73,11 +91,24 @@ $rows = foreach ($pluginName in @('browser', 'chrome', 'computer-use')) {
     $null
   }
 
+  $installedPlugin = $installedByName[$pluginName]
+  $installedVersion = if ($null -ne $installedPlugin) {
+    [string]$installedPlugin.version
+  } else {
+    $null
+  }
+
   [pscustomobject]@{
     Plugin = $pluginName
     PackageVersion = $packageVersion
     RuntimeVersion = $runtimeVersion
-    Match = $null -ne $packageVersion -and $packageVersion -eq $runtimeVersion
+    RuntimeMatch = $null -ne $packageVersion -and $packageVersion -eq $runtimeVersion
+    InstalledVersion = $installedVersion
+    InstalledMatch = if ($null -eq $installedPlugin) {
+      $null
+    } else {
+      $null -ne $packageVersion -and $packageVersion -eq $installedVersion
+    }
   }
 }
 
@@ -96,10 +127,11 @@ $rows | Format-Table -AutoSize
 
 $healthy = $runtimeExists -and
   -not $runtimeEncrypted -and
-  ($rows | Where-Object { -not $_.Match }).Count -eq 0
+  ($rows | Where-Object { -not $_.RuntimeMatch }).Count -eq 0 -and
+  ($rows | Where-Object { $null -ne $_.InstalledMatch -and -not $_.InstalledMatch }).Count -eq 0
 
 if (!$healthy) {
-  Write-Warning "Bundled marketplace health check failed. Fully restart Codex Desktop, then rerun this script before using manual copy recovery."
+  Write-Warning "Bundled marketplace or installed plugin versions are out of sync. Review the mismatched columns, fully restart Codex Desktop, and rerun this script before using manual recovery."
   exit 1
 }
 
