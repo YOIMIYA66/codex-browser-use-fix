@@ -1,6 +1,6 @@
 # Codex Browser Use Fix
 
-[中文](#中文) | [English](#english) | [26.721 → 26.727 中文复盘](./docs/26.721-to-26.727-browser-recovery.zh-CN.md) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Chrome Native Host repair](./docs/chrome-native-host-runtime-repair.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [Runtime repair](./scripts/repair-codex-chrome-runtime.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
+[中文](#中文) | [English](#english) | [26.810 Chrome 实连验证](./docs/26.810-chrome-live-verification.zh-CN.md) | [26.721 → 26.727 中文复盘](./docs/26.721-to-26.727-browser-recovery.zh-CN.md) | [Update-safe marketplace](./docs/update-safe-bundled-marketplace.md) | [Chrome Native Host repair](./docs/chrome-native-host-runtime-repair.md) | [Health check](./scripts/check-codex-browser-health.ps1) | [Runtime repair](./scripts/repair-codex-chrome-runtime.ps1) | [HTML guide](./browser-use-plugin-tutorial.html)
 
 This repository documents Windows workarounds for repairing Codex Desktop's bundled browser plugins when they are present locally but unavailable or broken in the plugin UI. It covers the in-app `Browser` plugin and the external `Chrome` plugin.
 
